@@ -1,36 +1,54 @@
 # -*- coding: utf-8 -*-
 
+"""Forms for GuiltyTargets-Web."""
+
+import os
+
 from flask_wtf import FlaskForm
 from flask_wtf.file import FileField
 from wtforms.fields import RadioField, StringField, SubmitField, TextAreaField
+from wtforms.validators import DataRequired
 
-PPI_PATH = '/Users/cthoyt/ownCloud/Gene-Prioritization-Data/MayoRNASeq-TCX/hippie_current.edgelist'
+HERE = os.path.abspath(os.path.dirname(__file__))
 
-ppi_graph = RadioField(
-    'PPI Graph',
-    choices=[
-        ('string', 'STRING'),  # TODO add link
-        (PPI_PATH, 'HIPPIE'),
-    ],
-    default=PPI_PATH
-)
+STRING_PATH = os.path.join(os.pardir, os.pardir, 'data', 'string.edgelist')
+HIPPIE_PATH = os.path.join(os.pardir, os.pardir, 'data', 'hippie.edgelist')
 
-class GuiltyTargetsForm(FlaskForm):
-    """The form for using the GAT2VEC pipeline."""
-    entrez_gene_identifiers = TextAreaField('Entrez Gene Identifiers')
-    ppi_graph = ppi_graph
+
+class Form(FlaskForm):
+    """The form for using the GuiltyTargets pipeline."""
+
+    entrez_gene_identifiers = TextAreaField(
+        'Entrez Gene Identifiers',
+        validators=[DataRequired()],
+    )
+
+    ppi_graph = RadioField(
+        'PPI Graph',
+        choices=[
+            (STRING_PATH, 'STRING'),
+            (HIPPIE_PATH, 'HIPPIE'),
+        ],
+        default=HIPPIE_PATH,
+    )
+
     file = FileField(
         'Differential Gene Expression File',
-        # validators=[DataRequired()],
+        validators=[DataRequired()],
     )
+
     gene_symbol_column = StringField(
         'Gene Symbol Column Name',
         default='Gene.symbol',
+        validators=[DataRequired()],
     )
+
     log_fold_change_column = StringField(
         'Log Fold Change Column Name',
         default='logFC',
+        validators=[DataRequired()],
     )
+
     separator = RadioField(
         'Separator',
         choices=[
@@ -39,5 +57,5 @@ class GuiltyTargetsForm(FlaskForm):
         ],
         default='\t')
 
-    # Submit
+    #: The submit field
     submit = SubmitField('Upload')

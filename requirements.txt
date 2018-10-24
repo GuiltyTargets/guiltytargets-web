@@ -1,9 +1,9 @@
 -e git+https://github.com/GuiltyTargets/ppi-network-annotation#egg=ppi-network-annotation
 -e git+https://github.com/ozlemmuslu/guiltytargets#egg=guiltytargets
 -e git+https://github.com/ozlemmuslu/GAT2VEC#egg=GAT2VEC
-flask[web]
-flask-bootstrap[web]
-wtforms[web]
-flask-wtf[web]
-celery[web]
-sqlalchemy[web]
+flask
+flask-bootstrap
+wtforms
+flask-wtf
+celery
+sqlalchemy

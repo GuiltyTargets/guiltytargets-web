@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 
-"""WSGI application for GuiltyTargets.
+"""A WSGI application for GuiltyTargets.
 
 Both the application and the celery worker have to be running at the same time.
 
-Run rabbitmq in the background
+1. Run rabbitmq in the background
 
-Run application with:
+2. Run application with:
 
 .. code-block:: bash
 
     $ python -m guiltytargets_web.wsgi
 
-Run celery worker with:
+3. Run celery worker with:
 
 .. code-block:: bash
 
@@ -21,16 +21,21 @@ Run celery worker with:
 """
 import logging
 import os
-from typing import Tuple
+import time
+from typing import List, Tuple
 
+import click
 from celery import Celery
 from celery.result import AsyncResult
 from celery.utils.log import get_task_logger
 from flask import Flask, Markup, flash, jsonify, redirect, render_template, url_for
 from flask_bootstrap import Bootstrap
 
-from guiltytargets_web.forms import GuiltyTargetsForm
-from guiltytargets_web.tasks import guiltytargets_pipeline
+from guiltytargets.pipeline import rank_targets
+from guiltytargets_web.forms import Form
+from ppi_network_annotation.model.attribute_network import AttributeNetwork
+from ppi_network_annotation.model.labeled_network import LabeledNetwork
+from ppi_network_annotation.pipeline import generate_ppi_network
 
 celery_logger = get_task_logger(__name__)
 logger = logging.getLogger(__name__)
@@ -85,33 +90,66 @@ celery = Celery(
     backend=app.config[CELERY_RESULT_BACKEND],
 )
 
+# -*- coding: utf-8 -*-
+
+"""Forms for GuiltyTargets-Web."""
+
 
 @celery.task(name=RUN_GUILTYTARGETS)
-def run_guiltytargets(
-        targets: list,
+def run(targets: List[str],
         ppi_graph_path: str,
         dge_path: str,
         entrez_id_header: str,
-        l2fc_header: str,
-        adjp_header: str,
+        log2_fold_change_header: str,
+        adj_p_header: str,
         base_mean_header: str,
-        split_char: str,
-        output_dir: str
-):
-    return guiltytargets_pipeline(
-        targets,
-        ppi_graph_path,
-        dge_path,
-        entrez_id_header,
-        l2fc_header,
-        adjp_header,
-        base_mean_header,
-        split_char,
-        output_dir
+        entrez_delimiter: str,
+        output_directory: str):
+    """Run the GuiltyTargets pipeline."""
+    start_time = time.time()
+
+    assert os.path.exists(ppi_graph_path), f'ppi graph file does not exist: {ppi_graph_path}'
+    assert os.path.exists(dge_path), f'differential expression file does not exist: {dge_path}'
+
+
+    click.secho('generating PPI network', color='cyan')
+    network = generate_ppi_network(
+        ppi_graph_path=ppi_graph_path,
+        dge_path=dge_path,
+        entrez_id_header=entrez_id_header,
+        log2_fold_change_header=log2_fold_change_header,
+        adj_p_header=adj_p_header,
+        base_mean_header=base_mean_header,
+        entrez_delimiter=entrez_delimiter,
+        max_adj_p=0.05,
+        min_log2_fold_change=1.0,
+        max_log2_fold_change=-1.0,
+        ppi_edge_min_confidence=0.0,
+    )
+    labeled_network = LabeledNetwork(network)
+    attribute_network = AttributeNetwork(network)
+
+    rv = {
+        'adjacency_list': network.get_adjlist(),
+        'attribute_adjacency_list': attribute_network.get_attribute_mappings(),
+        'label_mappings': labeled_network.get_index_labels(targets),
+    }
+
+    os.makedirs(output_directory, exist_ok=True)
+    auc_df, probs_df = rank_targets(
+        network=network,
+        targets=targets,
+        directory=output_directory,
     )
 
+    rv['auc'] = auc_df.to_json()
+    rv['probs'] = probs_df.to_json()
+    rv['time'] = time.time() - start_time
 
-def process_form(form: GuiltyTargetsForm) -> Tuple:  # TODO: implement
+    return rv
+
+
+def process_form(form: Form) -> Tuple:  # TODO: implement
     targets = [
         line.strip()
         for line in form.entrez_gene_identifiers.data.splitlines()
@@ -131,21 +169,24 @@ def process_form(form: GuiltyTargetsForm) -> Tuple:  # TODO: implement
 @app.route('/', methods=['GET', 'POST'])
 def home():
     """Serve the home page."""
-    guiltytargets_form = GuiltyTargetsForm()
+    form = Form()
 
-    if guiltytargets_form.validate_on_submit():
-        args = process_form(guiltytargets_form)
-        task = celery.send_task(RUN_GUILTYTARGETS, args=args)
-        url = url_for('results', task=task.task_id)
-        flash(Markup(f'Queued task <code><a href="{url}">{task}</a></code>.'))
-        return render_template('index.html', form=guiltytargets_form)
+    if not form.validate_on_submit():
+        return render_template('index.html', form=form)
 
-    return render_template('index.html', form=guiltytargets_form)
+    args = process_form(form)
+    task = celery.send_task(RUN_GUILTYTARGETS, args=args)
+
+    # Send a message to the user so they can find their task
+    flash(Markup(f'''Queued task <code><a href="{url_for('results', task=task.task_id)}">{task}</a></code>.'''))
+
+    return render_template('index.html', form=form)
 
 
 @app.route('/check/<task>', methods=['GET'])
 def check(task: str):
     """Check the given task.
+
     :param task: The UUID of a task.
     """
     task = AsyncResult(task, app=celery)
@@ -166,17 +207,17 @@ def check(task: str):
 @app.route('/results/<task>', methods=['GET'])
 def results(task: str):
     """Check the given task.
+
     :param task: The UUID of a task.
     """
     task = AsyncResult(task, app=celery)
 
-    if not task.successful():
-        url = url_for('results', task=task.task_id)
-        flash(Markup(f'Task <code><a href="{url}">{task}</a></code> is not yet complete.'),
-              category='warning')
-        return redirect(url_for('home'))
+    if task.successful():
+        return render_template('results.html', task=task)
 
-    return render_template('results.html', task=task)
+    url = url_for('results', task=task.task_id)
+    flash(Markup(f'Task <code><a href="{url}">{task}</a></code> is not yet complete.'), category='warning')
+    return redirect(url_for('home'))
 
 
 if __name__ == '__main__':
