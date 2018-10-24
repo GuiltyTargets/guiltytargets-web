@@ -10,35 +10,52 @@ Both the application and the celery worker have to be running at the same time.
 
 .. code-block:: bash
 
-    $ python -m guiltytargets_web.wsgi
+    $ pipenv run gunicorn wsgi:app
 
 3. Run celery worker with:
 
 .. code-block:: bash
 
-    $ celery worker -A guiltytargets_web.wsgi.celery -l INFO # TODO: not sure
+    $ celery worker -A wsgi.celery -l INFO # TODO: not sure
 
 """
 import logging
 import os
+import tempfile
 import time
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
-import click
+import pandas as pd
 from celery import Celery
 from celery.result import AsyncResult
 from celery.utils.log import get_task_logger
 from flask import Flask, Markup, flash, jsonify, redirect, render_template, url_for
 from flask_bootstrap import Bootstrap
+from flask_wtf import FlaskForm
+from flask_wtf.file import FileField
+from wtforms.fields import RadioField, StringField, SubmitField, TextAreaField
+from wtforms.validators import DataRequired
 
 from guiltytargets.pipeline import rank_targets
-from guiltytargets_web.forms import Form
-from ppi_network_annotation.model.attribute_network import AttributeNetwork
-from ppi_network_annotation.model.labeled_network import LabeledNetwork
+from ppi_network_annotation.model import AttributeNetwork, Gene, LabeledNetwork
+from ppi_network_annotation.parsers import handle_dataframe
 from ppi_network_annotation.pipeline import generate_ppi_network
 
 celery_logger = get_task_logger(__name__)
 logger = logging.getLogger(__name__)
+
+HERE = os.path.abspath(os.path.dirname(__file__))
+
+STRING_PATH = os.path.abspath(os.path.join(HERE, 'data', 'string.edgelist'))
+HIPPIE_PATH = os.path.abspath(os.path.join(HERE, 'data', 'hippie.edgelist'))
+
+PPI_PATH_CHOICES = [
+    (path, name)
+    for path, name in [(STRING_PATH, 'STRING'), (HIPPIE_PATH, 'HIPPIE')]
+    if os.path.exists(path)
+]
+
+assert PPI_PATH_CHOICES, 'no files available'
 
 ##############################
 # Configuration option names #
@@ -90,37 +107,21 @@ celery = Celery(
     backend=app.config[CELERY_RESULT_BACKEND],
 )
 
-# -*- coding: utf-8 -*-
-
-"""Forms for GuiltyTargets-Web."""
-
 
 @celery.task(name=RUN_GUILTYTARGETS)
-def run(targets: List[str],
-        ppi_graph_path: str,
-        dge_path: str,
-        entrez_id_header: str,
-        log2_fold_change_header: str,
-        adj_p_header: str,
-        base_mean_header: str,
-        entrez_delimiter: str,
-        output_directory: str):
+def run(targets: List[str], ppi_graph_path: str, dge_json: List[Dict]):
     """Run the GuiltyTargets pipeline."""
     start_time = time.time()
 
     assert os.path.exists(ppi_graph_path), f'ppi graph file does not exist: {ppi_graph_path}'
-    assert os.path.exists(dge_path), f'differential expression file does not exist: {dge_path}'
 
+    dge_list = Gene.schema().load(dge_json, many=True)
 
-    click.secho('generating PPI network', color='cyan')
+    # stick the data in the temporary file
+    # load the PPI network
     network = generate_ppi_network(
         ppi_graph_path=ppi_graph_path,
-        dge_path=dge_path,
-        entrez_id_header=entrez_id_header,
-        log2_fold_change_header=log2_fold_change_header,
-        adj_p_header=adj_p_header,
-        base_mean_header=base_mean_header,
-        entrez_delimiter=entrez_delimiter,
+        dge_list=dge_list,
         max_adj_p=0.05,
         min_log2_fold_change=1.0,
         max_log2_fold_change=-1.0,
@@ -135,12 +136,12 @@ def run(targets: List[str],
         'label_mappings': labeled_network.get_index_labels(targets),
     }
 
-    os.makedirs(output_directory, exist_ok=True)
-    auc_df, probs_df = rank_targets(
-        network=network,
-        targets=targets,
-        directory=output_directory,
-    )
+    with tempfile.TemporaryDirectory() as output_directory:
+        auc_df, probs_df = rank_targets(
+            network=network,
+            targets=targets,
+            directory=output_directory,
+        )
 
     rv['auc'] = auc_df.to_json()
     rv['probs'] = probs_df.to_json()
@@ -149,17 +150,89 @@ def run(targets: List[str],
     return rv
 
 
-def process_form(form: Form) -> Tuple:  # TODO: implement
-    targets = [
-        line.strip()
-        for line in form.entrez_gene_identifiers.data.splitlines()
-    ]
+class Form(FlaskForm):
+    """The form for using the GuiltyTargets pipeline."""
 
-    # send the task to the queue (will happen asynchronously)
-    return (
-        targets,
-        form.ppi_graph.data
+    entrez_gene_identifiers = TextAreaField(
+        'Entrez Gene Identifiers',
+        validators=[DataRequired()],
     )
+
+    ppi_graph = RadioField(
+        'PPI Graph',
+        choices=PPI_PATH_CHOICES,
+        default=HIPPIE_PATH,
+    )
+
+    file = FileField(
+        'Differential Gene Expression File',
+        validators=[DataRequired()],
+    )
+
+    entrez_id_column_name = StringField(
+        'Entrez Gene Identifier Column Name',
+        default='Gene.ID',
+        validators=[DataRequired()],
+    )
+
+    log2_fold_change_column_name = StringField(
+        'Log Fold Change Column Name',
+        default='logFC',
+        validators=[DataRequired()],
+    )
+
+    adj_p_column_name = StringField(
+        'Adjusted P-value Column Name',
+        default='adj.P.Val',
+        validators=[DataRequired()],
+    )
+
+    entrez_delimiter = StringField(
+        'Entrez delimiter',
+        default='///',
+        validators=[DataRequired()],
+    )
+
+    base_mean_column_name = StringField(
+        'Base Mean Column Name',
+    )
+
+    separator = RadioField(
+        'Separator',
+        choices=[
+            ('\t', 'My document is a TSV file'),
+            (',', 'My document is a CSV file'),
+        ],
+        default='\t')
+
+    #: The submit field
+    submit = SubmitField('Upload')
+
+    def get_target_list(self) -> List[str]:
+        return [line.strip() for line in self.entrez_gene_identifiers.data.splitlines()]
+
+    def get_dge_list(self) -> List[Gene]:
+        df = pd.read_csv(self.file.data, sep=self.separator.data)
+        return handle_dataframe(
+            df,
+            entrez_id_name=self.entrez_id_column_name.data,
+            log2_fold_change_name=self.log2_fold_change_column_name.data,
+            adjusted_p_value_name=self.adj_p_column_name.data,
+            entrez_delimiter=self.entrez_delimiter.data,
+            base_mean=(self.base_mean_column_name.data or None)
+        )
+
+    def prepare(self) -> Tuple[List[str], str, List[Dict]]:
+        """"""
+        targets = self.get_target_list()
+        genes = self.get_dge_list()
+        gene_json = Gene.schema().dump(genes, many=True)
+
+        return (
+            targets,
+            self.ppi_graph.data,
+            gene_json
+        )
 
 
 ################
@@ -174,7 +247,7 @@ def home():
     if not form.validate_on_submit():
         return render_template('index.html', form=form)
 
-    args = process_form(form)
+    args = form.prepare()
     task = celery.send_task(RUN_GUILTYTARGETS, args=args)
 
     # Send a message to the user so they can find their task

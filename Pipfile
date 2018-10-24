@@ -1,0 +1,22 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+ppi-network-annotation = {editable = true, git = "https://github.com/GuiltyTargets/ppi-network-annotation"}
+guiltytargets = {editable = true, git = "https://github.com/ozlemmuslu/guiltytargets"}
+"gat2vec" = {editable = true, git = "https://github.com/ozlemmuslu/GAT2VEC"}
+celery = "*"
+Flask = "*"
+Flask-Bootstrap = "*"
+WTForms = "*"
+Flask-WTF = "*"
+SQLAlchemy = "*"
+deepwalk = {editable = true, ref = "70bbc1760d2afd8790788b8bbff4a00da85365c3", git = "https://github.com/phanein/deepwalk"}
+gunicorn = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.7"

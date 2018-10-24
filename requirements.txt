@@ -1,6 +1,7 @@
 -e git+https://github.com/GuiltyTargets/ppi-network-annotation#egg=ppi-network-annotation
 -e git+https://github.com/ozlemmuslu/guiltytargets#egg=guiltytargets
 -e git+https://github.com/ozlemmuslu/GAT2VEC#egg=GAT2VEC
+-e git+https://github.com/phanein/deepwalk@70bbc1760d2afd8790788b8bbff4a00da85365c3#egg=deepwalk
 flask
 flask-bootstrap
 wtforms
