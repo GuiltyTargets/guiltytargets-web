@@ -10,13 +10,13 @@ Both the application and the celery worker have to be running at the same time.
 
 .. code-block:: bash
 
-    $ pipenv run gunicorn wsgi:app
+    $ pipenv run gunicorn -b 0.0.0.0:5000 wsgi:app
 
 3. Run celery worker with:
 
 .. code-block:: bash
 
-    $ celery worker -A wsgi.celery -l INFO # TODO: not sure
+    $ pipenv run celery worker -A wsgi.celery -l INFO
 
 """
 import logging
